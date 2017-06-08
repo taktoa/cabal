@@ -1,7 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE NondecreasingIndentation #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -51,48 +50,48 @@ createArLibArchive verbosity lbi targetPath files = do
 
   let (targetDir, targetName) = splitFileName targetPath
   withTempDirectory verbosity targetDir "objs" $ \ tmpDir -> do
-  let tmpPath = tmpDir </> targetName
+    let tmpPath = tmpDir </> targetName
 
-  -- The args to use with "ar" are actually rather subtle and system-dependent.
-  -- In particular we have the following issues:
-  --
-  --  -- On OS X, "ar q" does not make an archive index. Archives with no
-  --     index cannot be used.
-  --
-  --  -- GNU "ar r" will not let us add duplicate objects, only "ar q" lets us
-  --     do that. We have duplicates because of modules like "A.M" and "B.M"
-  --     both make an object file "M.o" and ar does not consider the directory.
-  --
-  -- Our solution is to use "ar r" in the simple case when one call is enough.
-  -- When we need to call ar multiple times we use "ar q" and for the last
-  -- call on OSX we use "ar qs" so that it'll make the index.
+    -- The args to use with "ar" are actually rather subtle and system-dependent.
+    -- In particular we have the following issues:
+    --
+    -- - On OS X, "ar q" does not make an archive index. Archives with no
+    --   index cannot be used.
+    --
+    -- - GNU "ar r" will not let us add duplicate objects, only "ar q" lets us
+    --   do that. We have duplicates because of modules like "A.M" and "B.M"
+    --   both make an object file "M.o" and ar does not consider the directory.
+    --
+    -- Our solution is to use "ar r" in the simple case when one call is enough.
+    -- When we need to call ar multiple times we use "ar q" and for the last
+    -- call on OSX we use "ar qs" so that it'll make the index.
 
-  let simpleArgs  = case hostOS of
-             OSX -> ["-r", "-s"]
-             _   -> ["-r"]
+    let simpleArgs  = case hostOS of
+               OSX -> ["-r", "-s"]
+               _   -> ["-r"]
 
-      initialArgs = ["-q"]
-      finalArgs   = case hostOS of
-             OSX -> ["-q", "-s"]
-             _   -> ["-q"]
+        initialArgs = ["-q"]
+        finalArgs   = case hostOS of
+               OSX -> ["-q", "-s"]
+               _   -> ["-q"]
 
-      extraArgs   = verbosityOpts verbosity ++ [tmpPath]
+        extraArgs   = verbosityOpts verbosity ++ [tmpPath]
 
-      simple  = programInvocation ar (simpleArgs  ++ extraArgs)
-      initial = programInvocation ar (initialArgs ++ extraArgs)
-      middle  = initial
-      final   = programInvocation ar (finalArgs   ++ extraArgs)
+        simple  = programInvocation ar (simpleArgs  ++ extraArgs)
+        initial = programInvocation ar (initialArgs ++ extraArgs)
+        middle  = initial
+        final   = programInvocation ar (finalArgs   ++ extraArgs)
 
-  sequence_
-        [ runProgramInvocation verbosity inv
-        | inv <- multiStageProgramInvocation
-                   simple (initial, middle, final) files ]
+    sequence_
+          [ runProgramInvocation verbosity inv
+          | inv <- multiStageProgramInvocation
+                     simple (initial, middle, final) files ]
 
-  unless (hostArch == Arm -- See #1537
-          || hostOS == AIX) $ -- AIX uses its own "ar" format variant
-    wipeMetadata verbosity tmpPath
-  equal <- filesEqual tmpPath targetPath
-  unless equal $ renameFile tmpPath targetPath
+    unless (hostArch == Arm -- See #1537
+            || hostOS == AIX) $ -- AIX uses its own "ar" format variant
+      wipeMetadata verbosity tmpPath
+    equal <- filesEqual tmpPath targetPath
+    unless equal $ renameFile tmpPath targetPath
 
   where
     progDb = withPrograms lbi
