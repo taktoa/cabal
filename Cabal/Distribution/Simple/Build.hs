@@ -82,25 +82,36 @@ import Distribution.Verbosity
 import Distribution.Compat.Graph (IsNode(..))
 
 import Control.Monad
+import qualified Control.Monad.Trans.Class as Trans
+import qualified Control.Monad.Trans.State as State
 import qualified Data.Set as Set
 import System.FilePath ( (</>), (<.>), takeDirectory )
 import System.Directory ( getCurrentDirectory )
+import qualified System.IO (IO)
 
 -- -----------------------------------------------------------------------------
 -- |Build the libraries and executables in this package.
 
-build    :: PackageDescription  -- ^ Mostly information from the .cabal file
-         -> LocalBuildInfo      -- ^ Configuration information
-         -> BuildFlags          -- ^ Flags that the user passed to build
-         -> [ PPSuffixHandler ] -- ^ preprocessors to run before compiling
-         -> IO ()
-build pkg_descr lbi flags suffixes = do
+build :: PackageDescription -- ^ Mostly information from the @.cabal@ file
+      -> LocalBuildInfo     -- ^ Configuration information
+      -> BuildFlags         -- ^ Flags that the user passed to build
+      -> [PPSuffixHandler]  -- ^ Preprocessors to run before compiling
+      -> IO ()
+build pkg_descr lbi flags suffs = do
+  let distPref  = fromFlag (buildDistPref flags)
+  let verbosity = fromFlag (buildVerbosity flags)
+
   targets <- readTargetInfos verbosity pkg_descr lbi (buildArgs flags)
-  let componentsToBuild = neededTargetsInBuildOrder' pkg_descr lbi (map nodeKey targets)
-  info verbosity $ "Component build order: "
-                ++ intercalate ", "
-                    (map (showComponentName . componentLocalName . targetCLBI)
-                        componentsToBuild)
+
+  let componentsToBuild = neededTargetsInBuildOrder' pkg_descr lbi
+                          $ map nodeKey targets
+
+  info verbosity $ mconcat
+    [ "Component build order: "
+    , intercalate ", "
+      (map (showComponentName . componentLocalName . targetCLBI)
+        componentsToBuild)
+    ]
 
   when (null targets) $
     -- Only bother with this message if we're building the whole package
@@ -108,25 +119,26 @@ build pkg_descr lbi flags suffixes = do
 
   internalPackageDB <- createInternalPackageDB verbosity lbi distPref
 
-  (\f -> foldM_ f (installedPkgs lbi) componentsToBuild) $ \index target -> do
-    let comp = targetComponent target
-        clbi = targetCLBI target
-    componentInitialBuildSteps distPref pkg_descr lbi clbi verbosity
-    let bi     = componentBuildInfo comp
-        progs' = addInternalBuildTools pkg_descr lbi bi (withPrograms lbi)
-        lbi'   = lbi {
-                   withPrograms  = progs',
-                   withPackageDB = withPackageDB lbi ++ [internalPackageDB],
-                   installedPkgs = index
-                 }
-    mb_ipi <- buildComponent verbosity (buildNumJobs flags) pkg_descr
-                   lbi' suffixes comp clbi distPref
-    return (maybe index (Index.insert `flip` index) mb_ipi)
-  return ()
- where
-  distPref  = fromFlag (buildDistPref flags)
-  verbosity = fromFlag (buildVerbosity flags)
+  let buildTarget :: TargetInfo
+                  -> State.StateT Index.InstalledPackageIndex System.IO.IO ()
+      buildTarget target = do
+        index <- State.get
+        let comp   = targetComponent target
+        let clbi   = targetCLBI target
+        let bi     = componentBuildInfo comp
+        let progs' = addInternalBuildTools pkg_descr lbi bi (withPrograms lbi)
+        let lbi'   = lbi
+                     { withPrograms  = progs'
+                     , withPackageDB = withPackageDB lbi ++ [internalPackageDB]
+                     , installedPkgs = index
+                     }
+        let jobs   = buildNumJobs flags
+        mb_ipi <- Trans.lift $ do
+          componentInitialBuildSteps distPref pkg_descr lbi clbi verbosity
+          buildComponent verbosity jobs pkg_descr lbi' suffs comp clbi distPref
+        State.put $ maybe index (\ipi -> Index.insert ipi index) mb_ipi
 
+  State.evalStateT (mapM_ buildTarget componentsToBuild) (installedPkgs lbi)
 
 repl     :: PackageDescription  -- ^ Mostly information from the .cabal file
          -> LocalBuildInfo      -- ^ Configuration information

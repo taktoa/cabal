@@ -246,13 +246,13 @@ data GhcOptions = GhcOptions {
 } deriving (Show, Generic)
 
 
-data GhcMode = GhcModeCompile     -- ^ @ghc -c@
-             | GhcModeLink        -- ^ @ghc@
-             | GhcModeMake        -- ^ @ghc --make@
-             | GhcModeInteractive -- ^ @ghci@ \/ @ghc --interactive@
-             | GhcModeAbiHash     -- ^ @ghc --abi-hash@
---             | GhcModeDepAnalysis -- ^ @ghc -M@
---             | GhcModeEvaluate    -- ^ @ghc -e@
+data GhcMode = GhcModeCompile         -- ^ @ghc -c@
+             | GhcModeLink            -- ^ @ghc@
+             | GhcModeMake            -- ^ @ghc --make@
+             | GhcModeInteractive     -- ^ @ghci@ \/ @ghc --interactive@
+             | GhcModeAbiHash         -- ^ @ghc --abi-hash@
+             | GhcModeDepAnalysis     -- ^ @ghc -M@
+             | GhcModeEvaluate String -- ^ @ghc -e@
  deriving (Show, Eq)
 
 data GhcOptimisation = GhcNoOptimisation             -- ^ @-O0@
@@ -292,14 +292,14 @@ renderGhcOptions comp _platform@(Platform _arch os) opts
   | otherwise =
   concat
   [ case flagToMaybe (ghcOptMode opts) of
-       Nothing                 -> []
-       Just GhcModeCompile     -> ["-c"]
-       Just GhcModeLink        -> []
-       Just GhcModeMake        -> ["--make"]
-       Just GhcModeInteractive -> ["--interactive"]
-       Just GhcModeAbiHash     -> ["--abi-hash"]
---     Just GhcModeDepAnalysis -> ["-M"]
---     Just GhcModeEvaluate    -> ["-e", expr]
+       Nothing                     -> []
+       Just GhcModeCompile         -> ["-c"]
+       Just GhcModeLink            -> []
+       Just GhcModeMake            -> ["--make"]
+       Just GhcModeInteractive     -> ["--interactive"]
+       Just GhcModeAbiHash         -> ["--abi-hash"]
+       Just GhcModeDepAnalysis     -> ["-M"]
+       Just (GhcModeEvaluate expr) -> ["-e", expr]
 
   , flags ghcOptExtraDefault
 
