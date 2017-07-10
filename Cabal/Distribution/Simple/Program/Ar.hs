@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 
 -----------------------------------------------------------------------------
@@ -33,6 +34,7 @@ import Distribution.Simple.Utils
          ( dieWithLocation', withTempDirectory )
 import Distribution.System
          ( Arch(..), OS(..), Platform(..) )
+import Distribution.Utils.MonadCommand
 import Distribution.Verbosity
          ( Verbosity, deafening, verbose )
 import System.Directory (doesFileExist, renameFile)
@@ -43,8 +45,9 @@ import System.IO
 
 -- | Call @ar@ to create a library archive from a bunch of object files.
 --
-createArLibArchive :: Verbosity -> LocalBuildInfo
-                   -> FilePath -> [FilePath] -> IO ()
+createArLibArchive :: (MonadCommand m)
+                   => Verbosity -> LocalBuildInfo
+                   -> FilePath -> [FilePath] -> m ()
 createArLibArchive verbosity lbi targetPath files = do
   (ar, _) <- requireProgram verbosity arProgram progDb
 
@@ -106,7 +109,7 @@ createArLibArchive verbosity lbi targetPath files = do
 -- (@-D@) flag that always writes zero for the mtime, UID and GID, and 0644
 -- for the file mode. However detecting whether @-D@ is supported seems
 -- rather harder than just re-implementing this feature.
-wipeMetadata :: Verbosity -> FilePath -> IO ()
+wipeMetadata :: forall m. (MonadCommand m) => Verbosity -> FilePath -> m ()
 wipeMetadata verbosity path = do
     -- Check for existence first (ReadWriteMode would create one otherwise)
     exists <- doesFileExist path
@@ -128,14 +131,14 @@ wipeMetadata verbosity path = do
     headerSize = 60
 
     -- http://en.wikipedia.org/wiki/Ar_(Unix)#File_format_details
-    wipeArchive :: Handle -> Integer -> IO ()
+    wipeArchive :: Handle -> Integer -> m ()
     wipeArchive h archiveSize = do
         global <- BS.hGet h (BS.length archLF)
         unless (global == archLF) $ wipeError "Bad global header"
         wipeHeader (toInteger $ BS.length archLF)
 
       where
-        wipeHeader :: Integer -> IO ()
+        wipeHeader :: Integer -> m ()
         wipeHeader offset = case compare offset archiveSize of
             EQ -> return ()
             GT -> wipeError (atOffset "Archive truncated")

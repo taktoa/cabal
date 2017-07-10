@@ -67,8 +67,9 @@ import Distribution.Simple.Program.Types
 import Distribution.Simple.Program.Find
 import Distribution.Simple.Program.Builtin
 import Distribution.Simple.Utils
-import Distribution.Version
 import Distribution.Text
+import Distribution.Utils.MonadCommand
+import Distribution.Version
 import Distribution.Verbosity
 
 import Control.Monad (join)
@@ -299,6 +300,7 @@ updateProgram prog = updateConfiguredProgs $
 configuredPrograms :: ProgramDb -> [ConfiguredProgram]
 configuredPrograms = Map.elems . configuredProgs
 
+
 -- ---------------------------
 -- Configuring known programs
 
@@ -316,52 +318,55 @@ configuredPrograms = Map.elems . configuredProgs
 -- To verify that a program was actually successfully configured use
 -- 'requireProgram'.
 --
-configureProgram :: Verbosity
+configureProgram :: (MonadCommand m)
+                 => Verbosity
                  -> Program
                  -> ProgramDb
-                 -> IO ProgramDb
+                 -> m ProgramDb
 configureProgram verbosity prog progdb = do
   let name = programName prog
   maybeLocation <- case userSpecifiedPath prog progdb of
-    Nothing   ->
-      programFindLocation prog verbosity (progSearchPath progdb)
-      >>= return . fmap (swap . fmap FoundOnSystem . swap)
+    Nothing   -> (return . fmap (swap . fmap FoundOnSystem . swap))
+                 =<< programFindLocation prog verbosity (progSearchPath progdb)
     Just path -> do
+      let notFound = mconcat [ "Cannot find the program '", name
+                             , "'. User-specified path '"
+                             , path, "' does not refer to an executable and "
+                             , "the program is not on the system path." ]
       absolute <- doesExecutableExist path
       if absolute
         then return (Just (UserSpecified path, []))
         else findProgramOnSearchPath verbosity (progSearchPath progdb) path
              >>= maybe (die' verbosity notFound)
                        (return . Just . swap . fmap UserSpecified . swap)
-      where notFound = "Cannot find the program '" ++ name
-                     ++ "'. User-specified path '"
-                     ++ path ++ "' does not refer to an executable and "
-                     ++ "the program is not on the system path."
+
   case maybeLocation of
     Nothing -> return progdb
     Just (location, triedLocations) -> do
       version <- programFindVersion prog verbosity (locationPath location)
       newPath <- programSearchPathAsPATHVar (progSearchPath progdb)
-      let configuredProg        = ConfiguredProgram {
-            programId           = name,
-            programVersion      = version,
-            programDefaultArgs  = [],
-            programOverrideArgs = userSpecifiedArgs prog progdb,
-            programOverrideEnv  = [("PATH", Just newPath)],
-            programProperties   = Map.empty,
-            programLocation     = location,
-            programMonitorFiles = triedLocations
-          }
+      let configuredProg
+            = ConfiguredProgram
+              { programId           = name
+              , programVersion      = version
+              , programDefaultArgs  = []
+              , programOverrideArgs = userSpecifiedArgs prog progdb
+              , programOverrideEnv  = [("PATH", Just newPath)]
+              , programProperties   = Map.empty
+              , programLocation     = location
+              , programMonitorFiles = triedLocations
+              }
       configuredProg' <- programPostConf prog verbosity configuredProg
       return (updateConfiguredProgs (Map.insert name configuredProg') progdb)
 
 
 -- | Configure a bunch of programs using 'configureProgram'. Just a 'foldM'.
 --
-configurePrograms :: Verbosity
+configurePrograms :: (MonadCommand m)
+                  => Verbosity
                   -> [Program]
                   -> ProgramDb
-                  -> IO ProgramDb
+                  -> m ProgramDb
 configurePrograms verbosity progs progdb =
   foldM (flip (configureProgram verbosity)) progdb progs
 
@@ -370,49 +375,52 @@ configurePrograms verbosity progs progdb =
 -- use it, but it can be handy for making sure a 'requireProgram'
 -- actually reconfigures.
 unconfigureProgram :: String -> ProgramDb -> ProgramDb
-unconfigureProgram progname =
-  updateConfiguredProgs $ Map.delete progname
+unconfigureProgram progname
+  = updateConfiguredProgs $ Map.delete progname
 
 -- | Try to configure all the known programs that have not yet been configured.
 --
-configureAllKnownPrograms :: Verbosity
+configureAllKnownPrograms :: (MonadCommand m)
+                          => Verbosity
                           -> ProgramDb
-                          -> IO ProgramDb
-configureAllKnownPrograms verbosity progdb =
-  configurePrograms verbosity
-    [ prog | (prog,_,_) <- Map.elems notYetConfigured ] progdb
-  where
-    notYetConfigured = unconfiguredProgs progdb
-      `Map.difference` configuredProgs progdb
-
+                          -> m ProgramDb
+configureAllKnownPrograms verbosity progdb
+  = let notYetConfigured = unconfiguredProgs progdb
+                           `Map.difference`
+                           configuredProgs progdb
+        programs = [prog | (prog, _, _) <- Map.elems notYetConfigured]
+    in configurePrograms verbosity programs progdb
 
 -- | reconfigure a bunch of programs given new user-specified args. It takes
 -- the same inputs as 'userSpecifyPath' and 'userSpecifyArgs' and for all progs
 -- with a new path it calls 'configureProgram'.
 --
-reconfigurePrograms :: Verbosity
+reconfigurePrograms :: (MonadCommand m)
+                    => Verbosity
                     -> [(String, FilePath)]
                     -> [(String, [ProgArg])]
                     -> ProgramDb
-                    -> IO ProgramDb
+                    -> m ProgramDb
 reconfigurePrograms verbosity paths argss progdb = do
   configurePrograms verbosity progs
-   . userSpecifyPaths paths
-   . userSpecifyArgss argss
-   $ progdb
-
+    . userSpecifyPaths paths
+    . userSpecifyArgss argss
+    $ progdb
   where
-    progs = catMaybes [ lookupKnownProgram name progdb | (name,_) <- paths ]
-
+    progs = catMaybes [lookupKnownProgram name progdb | (name,_) <- paths]
 
 -- | Check that a program is configured and available to be run.
 --
 -- It raises an exception if the program could not be configured, otherwise
 -- it returns the configured program.
 --
-requireProgram :: Verbosity -> Program -> ProgramDb
-               -> IO (ConfiguredProgram, ProgramDb)
+requireProgram :: (MonadCommand m)
+               => Verbosity -> Program -> ProgramDb
+               -> m (ConfiguredProgram, ProgramDb)
 requireProgram verbosity prog progdb = do
+  let notFound = mconcat [ "The program '"
+                         , programName prog
+                         , "' is required but it could not be found." ]
 
   -- If it's not already been configured, try to configure it now
   progdb' <- case lookupProgram prog progdb of
@@ -422,10 +430,6 @@ requireProgram verbosity prog progdb = do
   case lookupProgram prog progdb' of
     Nothing             -> die' verbosity notFound
     Just configuredProg -> return (configuredProg, progdb')
-
-  where notFound       = "The program '" ++ programName prog
-                      ++ "' is required but it could not be found."
-
 
 -- | Check that a program is configured and available to be run.
 --
@@ -438,9 +442,25 @@ requireProgram verbosity prog progdb = do
 -- unsuitable, it returns an error value.
 --
 lookupProgramVersion
-  :: Verbosity -> Program -> VersionRange -> ProgramDb
-  -> IO (Either String (ConfiguredProgram, Version, ProgramDb))
+  :: (MonadCommand m)
+  => Verbosity -> Program -> VersionRange -> ProgramDb
+  -> m (Either String (ConfiguredProgram, Version, ProgramDb))
 lookupProgramVersion verbosity prog range programDb = do
+  let versionRequirement
+        | isAnyVersion range = ""
+        | otherwise          = " version " ++ display range
+
+  let progIsRequiredBut msg = "The program '"
+                              ++ programName prog ++ "'" ++ versionRequirement
+                              ++ " is required but " ++ mconcat msg
+
+  let notFound         = progIsRequiredBut ["it could not be found."]
+  let badVersion v l   = progIsRequiredBut
+                         [ "the version found at ", locationPath l
+                         , " is version ", display v ]
+  let unknownVersion l = progIsRequiredBut
+                         [ "the version of ", locationPath l
+                         , " could not be determined." ]
 
   -- If it's not already been configured, try to configure it now
   programDb' <- case lookupProgram prog programDb of
@@ -449,37 +469,20 @@ lookupProgramVersion verbosity prog range programDb = do
 
   case lookupProgram prog programDb' of
     Nothing                           -> return $! Left notFound
-    Just configuredProg@ConfiguredProgram { programLocation = location } ->
+    Just (configuredProg@(ConfiguredProgram { programLocation = location })) ->
       case programVersion configuredProg of
-        Just version
-          | withinRange version range ->
-            return $! Right (configuredProg, version ,programDb')
-          | otherwise                 ->
-            return $! Left (badVersion version location)
-        Nothing                       ->
-          return $! Left (unknownVersion location)
-
-  where notFound       = "The program '"
-                      ++ programName prog ++ "'" ++ versionRequirement
-                      ++ " is required but it could not be found."
-        badVersion v l = "The program '"
-                      ++ programName prog ++ "'" ++ versionRequirement
-                      ++ " is required but the version found at "
-                      ++ locationPath l ++ " is version " ++ display v
-        unknownVersion l = "The program '"
-                      ++ programName prog ++ "'" ++ versionRequirement
-                      ++ " is required but the version of "
-                      ++ locationPath l ++ " could not be determined."
-        versionRequirement
-          | isAnyVersion range = ""
-          | otherwise          = " version " ++ display range
+        Just version | withinRange version range
+                       -> return $! Right (configuredProg, version, programDb')
+        Just version   -> return $! Left (badVersion version location)
+        Nothing        -> return $! Left (unknownVersion location)
 
 -- | Like 'lookupProgramVersion', but raises an exception in case of error
 -- instead of returning 'Left errMsg'.
 --
-requireProgramVersion :: Verbosity -> Program -> VersionRange
+requireProgramVersion :: (MonadCommand m)
+                      => Verbosity -> Program -> VersionRange
                       -> ProgramDb
-                      -> IO (ConfiguredProgram, Version, ProgramDb)
-requireProgramVersion verbosity prog range programDb =
-  join $ either (die' verbosity) return `fmap`
-  lookupProgramVersion verbosity prog range programDb
+                      -> m (ConfiguredProgram, Version, ProgramDb)
+requireProgramVersion verbosity prog range programDb
+  = lookupProgramVersion verbosity prog range programDb
+    >>= either (die' verbosity) return

@@ -55,6 +55,7 @@ import Distribution.Text
 import Distribution.Types.ComponentId
 import Distribution.Types.PackageId
 import Distribution.Types.UnitId
+import Distribution.Utils.MonadCommand
 import Distribution.Verbosity
 import Distribution.Compat.Exception
 
@@ -85,20 +86,18 @@ data HcPkgInfo = HcPkgInfo
 --
 -- > hc-pkg init {path}
 --
-init :: HcPkgInfo -> Verbosity -> Bool -> FilePath -> IO ()
+init :: (MonadCommand m) => HcPkgInfo -> Verbosity -> Bool -> FilePath -> m ()
 init hpi verbosity preferCompat path
-  |  not (supportsDirDbs hpi)
- || (not (requiresDirDbs hpi) && preferCompat)
+  | not (supportsDirDbs hpi) || (not (requiresDirDbs hpi) && preferCompat)
   = writeFile path "[]"
-
   | otherwise
-  = runProgramInvocation verbosity (initInvocation hpi verbosity path)
+  = runProgram verbosity (initInvocation hpi verbosity path)
 
 -- | Run @hc-pkg@ using a given package DB stack, directly forwarding the
 -- provided command-line arguments to it.
-invoke :: HcPkgInfo -> Verbosity -> PackageDBStack -> [String] -> IO ()
-invoke hpi verbosity dbStack extraArgs =
-  runProgramInvocation verbosity invocation
+invoke :: (MonadCommand m)
+       => HcPkgInfo -> Verbosity -> PackageDBStack -> [String] -> m ()
+invoke hpi verbosity dbStack extraArgs = runProgram verbosity invocation
   where
     args       = packageDbStackOpts hpi dbStack ++ extraArgs
     invocation = programInvocation (hcPkgProgram hpi) args
@@ -133,20 +132,23 @@ defaultRegisterOptions = RegisterOptions {
 --
 -- > hc-pkg register {filename | -} [--user | --global | --package-db]
 --
-register :: HcPkgInfo -> Verbosity -> PackageDBStack
+register :: (MonadCommand m)
+         => HcPkgInfo -> Verbosity -> PackageDBStack
          -> InstalledPackageInfo
          -> RegisterOptions
-         -> IO ()
+         -> m ()
 register hpi verbosity packagedbs pkgInfo registerOptions
   | registerMultiInstance registerOptions
   , not (nativeMultiInstance hpi || recacheMultiInstance hpi)
-  = die' verbosity $ "HcPkg.register: the compiler does not support "
-       ++ "registering multiple instances of packages."
+  = die' verbosity
+    $  "HcPkg.register: the compiler does not support "
+    ++ "registering multiple instances of packages."
 
   | registerSuppressFilesCheck registerOptions
   , not (suppressFilesCheck hpi)
-  = die' verbosity $ "HcPkg.register: the compiler does not support "
-                  ++ "suppressing checks on files."
+  = die' verbosity
+    $  "HcPkg.register: the compiler does not support "
+    ++ "suppressing checks on files."
 
     -- This is a trick. Older versions of GHC do not support the
     -- --enable-multi-instance flag for ghc-pkg register but it turns out that
@@ -164,98 +166,107 @@ register hpi verbosity packagedbs pkgInfo registerOptions
        recache hpi verbosity pkgdb
 
   | otherwise
-  = runProgramInvocation verbosity
-      (registerInvocation hpi verbosity packagedbs pkgInfo registerOptions)
+  = runProgram verbosity
+    (registerInvocation hpi verbosity packagedbs pkgInfo registerOptions)
 
-writeRegistrationFileDirectly :: Verbosity
+writeRegistrationFileDirectly :: (MonadCommand m)
+                              => Verbosity
                               -> HcPkgInfo
                               -> PackageDB
                               -> InstalledPackageInfo
-                              -> IO ()
-writeRegistrationFileDirectly verbosity hpi (SpecificPackageDB dir) pkgInfo
-  | supportsDirDbs hpi
-  = do let pkgfile = dir </> display (installedUnitId pkgInfo) <.> "conf"
-       writeUTF8File pkgfile (showInstalledPackageInfo pkgInfo)
+                              -> m ()
+writeRegistrationFileDirectly verbosity hpi pkgDB pkgInfo = go pkgDB
+  where
+    err str = die' verbosity ("HcPkg.writeRegistrationFileDirectly: " ++ str)
 
-  | otherwise
-  = die' verbosity $ "HcPkg.writeRegistrationFileDirectly: compiler does not support dir style package dbs"
-
-writeRegistrationFileDirectly verbosity _ _ _ =
-    -- We don't know here what the dir for the global or user dbs are,
-    -- if that's needed it'll require a bit more plumbing to support.
-    die' verbosity $ "HcPkg.writeRegistrationFileDirectly: only supports SpecificPackageDB for now"
-
+    go (SpecificPackageDB dir)
+      | supportsDirDbs hpi
+      = do let pkgfile = dir </> display (installedUnitId pkgInfo) <.> "conf"
+           writeUTF8File pkgfile (showInstalledPackageInfo pkgInfo)
+      | otherwise
+      = err "compiler does not support dir style package dbs"
+    go _
+      -- We don't know here what the dir for the global or user dbs are,
+      -- if that's needed it'll require a bit more plumbing to support.
+      = err "only supports SpecificPackageDB for now"
 
 -- | Call @hc-pkg@ to unregister a package
 --
 -- > hc-pkg unregister [pkgid] [--user | --global | --package-db]
 --
-unregister :: HcPkgInfo -> Verbosity -> PackageDB -> PackageId -> IO ()
-unregister hpi verbosity packagedb pkgid =
-  runProgramInvocation verbosity
+unregister :: (MonadCommand m)
+           => HcPkgInfo -> Verbosity -> PackageDB -> PackageId -> m ()
+unregister hpi verbosity packagedb pkgid
+  = runProgram verbosity
     (unregisterInvocation hpi verbosity packagedb pkgid)
-
 
 -- | Call @hc-pkg@ to recache the registered packages.
 --
 -- > hc-pkg recache [--user | --global | --package-db]
 --
-recache :: HcPkgInfo -> Verbosity -> PackageDB -> IO ()
-recache hpi verbosity packagedb =
-  runProgramInvocation verbosity
+recache :: (MonadCommand m) => HcPkgInfo -> Verbosity -> PackageDB -> m ()
+recache hpi verbosity packagedb
+  = runProgram verbosity
     (recacheInvocation hpi verbosity packagedb)
-
 
 -- | Call @hc-pkg@ to expose a package.
 --
 -- > hc-pkg expose [pkgid] [--user | --global | --package-db]
 --
-expose :: HcPkgInfo -> Verbosity -> PackageDB -> PackageId -> IO ()
-expose hpi verbosity packagedb pkgid =
-  runProgramInvocation verbosity
+expose :: (MonadCommand m)
+       => HcPkgInfo -> Verbosity -> PackageDB -> PackageId -> m ()
+expose hpi verbosity packagedb pkgid
+  = runProgram verbosity
     (exposeInvocation hpi verbosity packagedb pkgid)
+
 
 -- | Call @hc-pkg@ to retrieve a specific package
 --
 -- > hc-pkg describe [pkgid] [--user | --global | --package-db]
 --
-describe :: HcPkgInfo -> Verbosity -> PackageDBStack -> PackageId -> IO [InstalledPackageInfo]
+describe :: (MonadCommand m)
+         => HcPkgInfo -> Verbosity -> PackageDBStack -> PackageId
+         -> m [InstalledPackageInfo]
 describe hpi verbosity packagedb pid = do
 
-  output <- getProgramInvocationOutput verbosity
-              (describeInvocation hpi verbosity packagedb pid)
-    `catchIO` \_ -> return ""
+  output <- (getProgramInvocationOutput verbosity
+              (describeInvocation hpi verbosity packagedb pid))
+            `catchIO` \_ -> return ""
 
   case parsePackages output of
     Left ok -> return ok
     _       -> die' verbosity $ "failed to parse output of '"
                   ++ programId (hcPkgProgram hpi) ++ " describe " ++ display pid ++ "'"
 
+
 -- | Call @hc-pkg@ to hide a package.
 --
 -- > hc-pkg hide [pkgid] [--user | --global | --package-db]
 --
-hide :: HcPkgInfo -> Verbosity -> PackageDB -> PackageId -> IO ()
-hide hpi verbosity packagedb pkgid =
-  runProgramInvocation verbosity
+hide :: (MonadCommand m)
+     => HcPkgInfo -> Verbosity -> PackageDB -> PackageId -> m ()
+hide hpi verbosity packagedb pkgid
+  = runProgram verbosity
     (hideInvocation hpi verbosity packagedb pkgid)
 
 
 -- | Call @hc-pkg@ to get all the details of all the packages in the given
 -- package database.
 --
-dump :: HcPkgInfo -> Verbosity -> PackageDB -> IO [InstalledPackageInfo]
+dump :: (MonadCommand m)
+     => HcPkgInfo -> Verbosity -> PackageDB -> m [InstalledPackageInfo]
 dump hpi verbosity packagedb = do
+  let err = die' verbosity . mconcat
+  let pgm = programId (hcPkgProgram hpi)
 
-  output <- getProgramInvocationOutput verbosity
-              (dumpInvocation hpi verbosity packagedb)
-    `catchIO` \e -> die' verbosity $ programId (hcPkgProgram hpi) ++ " dump failed: "
-                       ++ displayException e
+  output <- (getProgramInvocationOutput verbosity
+             (dumpInvocation hpi verbosity packagedb))
+            `catchIO`
+            \e -> err [pgm, " dump failed: ", displayException e]
 
   case parsePackages output of
     Left ok -> return ok
-    _       -> die' verbosity $ "failed to parse output of '"
-                  ++ programId (hcPkgProgram hpi) ++ " dump'"
+    _       -> err ["failed to parse output of '", pgm, " dump'"]
 
 parsePackages :: String -> Either [InstalledPackageInfo] [PError]
 parsePackages str =
@@ -345,32 +356,32 @@ setUnitId pkginfo = pkginfo
 -- Note in particular that it does not include the 'UnitId', just
 -- the source 'PackageId' which is not necessarily unique in any package db.
 --
-list :: HcPkgInfo -> Verbosity -> PackageDB
-     -> IO [PackageId]
+list :: (MonadCommand m)
+     => HcPkgInfo -> Verbosity -> PackageDB -> m [PackageId]
 list hpi verbosity packagedb = do
+  let err = die' verbosity . mconcat
+  let pgm = programId (hcPkgProgram hpi)
 
-  output <- getProgramInvocationOutput verbosity
-              (listInvocation hpi verbosity packagedb)
-    `catchIO` \_ -> die' verbosity $ programId (hcPkgProgram hpi) ++ " list failed"
+  output <- (getProgramInvocationOutput verbosity
+             (listInvocation hpi verbosity packagedb))
+            `catchIO` \_ -> err [pgm, " list failed"]
+
+  let parsePackageIds = traverse simpleParse . words
 
   case parsePackageIds output of
     Just ok -> return ok
-    _       -> die' verbosity $ "failed to parse output of '"
-                  ++ programId (hcPkgProgram hpi) ++ " list'"
+    _       -> err ["failed to parse output of '", pgm, " list'"]
 
-  where
-    parsePackageIds = traverse simpleParse . words
 
 --------------------------
 -- The program invocations
 --
 
 initInvocation :: HcPkgInfo -> Verbosity -> FilePath -> ProgramInvocation
-initInvocation hpi verbosity path =
-    programInvocation (hcPkgProgram hpi) args
+initInvocation hpi verbosity path
+  = programInvocation (hcPkgProgram hpi) args
   where
-    args = ["init", path]
-        ++ verbosityOpts hpi verbosity
+    args = ["init", path] ++ verbosityOpts hpi verbosity
 
 registerInvocation
   :: HcPkgInfo -> Verbosity -> PackageDBStack
@@ -496,4 +507,3 @@ verbosityOpts hpi v
   | v >= deafening = ["-v2"]
   | v == silent    = ["-v0"]
   | otherwise      = []
-

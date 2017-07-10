@@ -74,8 +74,9 @@ instance Binary ProgramSearchPathEntry
 defaultProgramSearchPath :: ProgramSearchPath
 defaultProgramSearchPath = [ProgramSearchPathDefault]
 
-findProgramOnSearchPath :: Verbosity -> ProgramSearchPath
-                        -> FilePath -> IO (Maybe (FilePath, [FilePath]))
+findProgramOnSearchPath :: (MonadCommand m)
+                        => Verbosity -> ProgramSearchPath
+                        -> FilePath -> m (Maybe (FilePath, [FilePath]))
 findProgramOnSearchPath verbosity searchpath prog = do
     debug verbosity $ "Searching for " ++ prog ++ " in path."
     res <- tryPathElems [] searchpath

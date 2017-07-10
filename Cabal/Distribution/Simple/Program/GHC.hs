@@ -31,6 +31,7 @@ import Distribution.System
 import Distribution.Text
 import Distribution.Types.ComponentId
 import Distribution.Verbosity
+import Distribution.Utils.MonadCommand
 import Distribution.Utils.NubList
 import Language.Haskell.Extension
 
@@ -271,11 +272,11 @@ data GhcProfAuto = GhcProfAutoAll       -- ^ @-fprof-auto@
                  | GhcProfAutoExported  -- ^ @-fprof-auto-exported@
  deriving (Show, Eq)
 
-runGHC :: Verbosity -> ConfiguredProgram -> Compiler -> Platform  -> GhcOptions
-       -> IO ()
-runGHC verbosity ghcProg comp platform opts = do
-  runProgramInvocation verbosity (ghcInvocation ghcProg comp platform opts)
-
+runGHC :: (MonadCommand m)
+       => Verbosity -> ConfiguredProgram -> Compiler -> Platform -> GhcOptions
+       -> m ()
+runGHC verbosity ghcProg comp platform opts
+  = runProgram verbosity (ghcInvocation ghcProg comp platform opts)
 
 ghcInvocation :: ConfiguredProgram -> Compiler -> Platform -> GhcOptions
               -> ProgramInvocation
